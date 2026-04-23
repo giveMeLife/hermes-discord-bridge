@@ -1,0 +1,4 @@
+name: discord-bridge
+description: "Intercept Discord messages as responses to CLI bridge clarify questions"
+events:
+  - gateway:message_received
