@@ -1,9 +1,12 @@
 """Discord Bridge - Send clarify questions to Discord via REST API.
 
 Sends messages to Discord using the bot token from .env, without needing
-a persistent WebSocket connection. This allows the CLI plugin to send
-questions even while the gateway is handling the Discord side.
+a persistent WebSocket connection. Creates a thread per CLI session so
+multiple sessions can run concurrently — each session's questions and
+responses stay in their own thread.
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -44,6 +47,7 @@ def _discord_api_request(method: str, url: str, token: str, data: dict | None = 
     headers = {
         "Authorization": f"Bot {token}",
         "Content-Type": "application/json",
+        "User-Agent": "Hermes-DiscordBridge/1.1",
     }
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -60,12 +64,42 @@ def _discord_api_request(method: str, url: str, token: str, data: dict | None = 
         return None
 
 
+def create_thread(session_id: str, channel_id: str, token: str) -> dict | None:
+    """Create a Discord thread in the home channel for a session.
+
+    Returns the thread object from Discord API, or None on failure.
+    Thread name is like "Hermes — abc123" (last 6 chars of session_id).
+    """
+    short_id = session_id.split("_")[-1][:6] if "_" in session_id else session_id[:6]
+    thread_name = f"Hermes — {short_id}"
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/threads"
+    data = {
+        "name": thread_name,
+        "type": 11,  # PUBLIC_THREAD
+        "auto_archive_duration": 60,  # 1 hour
+    }
+
+    result = _discord_api_request("POST", url, token, data)
+    if result and "id" in result:
+        logger.info("Created Discord thread %s for session %s", result["id"], session_id)
+        return result
+
+    logger.warning("Failed to create thread for session %s: %s", session_id, result)
+    return None
+
+
 def send_question_to_discord(
     question: str,
     choices: list | None = None,
     q_id: str = "",
+    thread_id: str | None = None,
 ) -> str | None:
-    """Send a clarify question to Discord. Returns the message ID or None."""
+    """Send a clarify question to Discord. Returns the message ID or None.
+
+    If thread_id is provided, sends to that thread. Otherwise sends to the
+    home channel directly (fallback for sessions without a thread yet).
+    """
     token, channel_id = _load_env()
     if not token or not channel_id:
         logger.warning("Discord bridge: missing DISCORD_BOT_TOKEN or DISCORD_HOME_CHANNEL")
@@ -93,23 +127,40 @@ def send_question_to_discord(
     if len(content) > 1950:
         content = content[:1950] + "\n..."
 
-    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    # Send to thread if available, otherwise to home channel
+    target_id = thread_id or channel_id
+    url = f"https://discord.com/api/v10/channels/{target_id}/messages"
     result = _discord_api_request("POST", url, token, {"content": content})
 
     if result and "id" in result:
-        logger.info("Discord bridge: sent question %s as message %s", q_id, result["id"])
+        logger.info("Discord bridge: sent question %s as message %s (thread=%s)",
+                     q_id, result["id"], thread_id)
         return result["id"]
     return None
 
 
-def send_ack_to_discord(response_text: str):
+def send_ack_to_discord(response_text: str, thread_id: str | None = None):
     """Send a brief acknowledgment to Discord after receiving a bridge response."""
     token, channel_id = _load_env()
     if not token or not channel_id:
         return
 
     content = f"**Got it!** Continuing in CLI session... ({response_text[:50]})"
-    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    target_id = thread_id or channel_id
+    url = f"https://discord.com/api/v10/channels/{target_id}/messages"
+    _discord_api_request("POST", url, token, {"content": content})
+
+
+def send_deactivation_notice(session_id: str, thread_id: str | None = None):
+    """Send a message to Discord when bridge mode is deactivated for a session."""
+    token, channel_id = _load_env()
+    if not token or not channel_id:
+        return
+
+    short_id = session_id.split("_")[-1][:6] if "_" in session_id else session_id[:6]
+    content = f"**Bridge deactivated** for session `{short_id}`. No more questions will be sent here."
+    target_id = thread_id or channel_id
+    url = f"https://discord.com/api/v10/channels/{target_id}/messages"
     _discord_api_request("POST", url, token, {"content": content})
 
 

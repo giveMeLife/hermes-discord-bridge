@@ -1,9 +1,13 @@
-"""Discord Bridge - Bridge file management.
+"""Discord Bridge - Bridge file and session management.
 
-Manages a shared JSONL file that acts as a mailbox between the CLI session
-and the Discord gateway. Questions are written by the CLI plugin, responses
-are written by the gateway hook.
+Manages a shared JSONL file that acts as a mailbox between CLI sessions
+and the Discord gateway, plus a sessions registry that tracks which
+sessions have bridge mode active and their associated Discord thread IDs.
+
+Supports multiple concurrent sessions — each gets its own Discord thread.
 """
+
+from __future__ import annotations
 
 import json
 import time
@@ -13,41 +17,143 @@ from datetime import datetime, timezone
 
 BRIDGE_DIR = Path.home() / ".hermes"
 BRIDGE_FILE = BRIDGE_DIR / "discord_bridge.jsonl"
-BRIDGE_MODE_FILE = BRIDGE_DIR / "discord_bridge_mode"
+SESSIONS_FILE = BRIDGE_DIR / "discord_bridge_sessions.json"
+
+# Legacy single-session mode file (kept for migration)
+LEGACY_MODE_FILE = BRIDGE_DIR / "discord_bridge_mode"
 
 
 # ---------------------------------------------------------------------------
-# Bridge mode flag (on/off)
+# Session registry (multi-session bridge mode)
 # ---------------------------------------------------------------------------
 
-def is_bridge_active() -> bool:
-    """Check if Discord bridge mode is currently active."""
-    return BRIDGE_MODE_FILE.exists()
-
-
-def activate_bridge():
-    """Activate Discord bridge mode."""
-    BRIDGE_MODE_FILE.write_text(datetime.now(timezone.utc).isoformat())
-
-
-def deactivate_bridge():
-    """Deactivate Discord bridge mode."""
+def _read_sessions() -> dict:
+    """Read the sessions registry. Returns {session_id: {active_since, thread_id, thread_name}}."""
+    if not SESSIONS_FILE.exists():
+        return {}
     try:
-        BRIDGE_MODE_FILE.unlink()
-    except FileNotFoundError:
+        return json.loads(SESSIONS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_sessions(sessions: dict):
+    """Write the sessions registry."""
+    SESSIONS_FILE.write_text(json.dumps(sessions, indent=2, ensure_ascii=False))
+
+
+def is_bridge_active(session_id: str | None = None) -> bool:
+    """Check if bridge mode is active for a given session (or any session if None)."""
+    sessions = _read_sessions()
+    if session_id:
+        return session_id in sessions
+    return len(sessions) > 0
+
+
+def activate_session(session_id: str) -> dict:
+    """Activate bridge mode for a session. Returns the session entry."""
+    sessions = _read_sessions()
+    entry = sessions.get(session_id, {})
+    entry["active_since"] = datetime.now(timezone.utc).isoformat()
+    entry.setdefault("thread_id", None)
+    entry.setdefault("thread_name", None)
+    sessions[session_id] = entry
+    _write_sessions(sessions)
+    return entry
+
+
+def deactivate_session(session_id: str) -> dict | None:
+    """Deactivate bridge mode for a session. Returns the removed entry or None."""
+    sessions = _read_sessions()
+    entry = sessions.pop(session_id, None)
+    _write_sessions(sessions)
+    return entry
+
+
+def set_session_thread(session_id: str, thread_id: str, thread_name: str):
+    """Store the Discord thread ID associated with a session."""
+    sessions = _read_sessions()
+    if session_id in sessions:
+        sessions[session_id]["thread_id"] = thread_id
+        sessions[session_id]["thread_name"] = thread_name
+        _write_sessions(sessions)
+
+
+def get_session_thread(session_id: str) -> str | None:
+    """Get the Discord thread ID for a session, or None."""
+    sessions = _read_sessions()
+    return sessions.get(session_id, {}).get("thread_id")
+
+
+def get_session_by_thread(thread_id: str) -> str | None:
+    """Get the session_id associated with a Discord thread, or None."""
+    sessions = _read_sessions()
+    for sid, entry in sessions.items():
+        if str(entry.get("thread_id")) == str(thread_id):
+            return sid
+    return None
+
+
+def get_active_sessions() -> dict:
+    """Return all active sessions (session_id -> entry)."""
+    return _read_sessions()
+
+
+def get_session_since(session_id: str) -> str | None:
+    """Return the timestamp when bridge was activated for a session, or None."""
+    sessions = _read_sessions()
+    return sessions.get(session_id, {}).get("active_since")
+
+
+def cleanup_old_sessions(max_age_hours: int = 24):
+    """Remove sessions older than max_age_hours from the registry."""
+    sessions = _read_sessions()
+    cutoff = time.time() - (max_age_hours * 3600)
+    kept = {}
+    for sid, entry in sessions.items():
+        since = entry.get("active_since", "")
+        if not since:
+            continue
+        try:
+            dt = datetime.fromisoformat(since)
+            if dt.timestamp() > cutoff:
+                kept[sid] = entry
+        except (ValueError, OSError):
+            continue
+    _write_sessions(kept)
+
+
+# ---------------------------------------------------------------------------
+# Legacy single-session mode (migrated on first call)
+# ---------------------------------------------------------------------------
+
+def _migrate_legacy_mode():
+    """One-time migration: if the old discord_bridge_mode file exists,
+    convert it to a session entry so existing users aren't surprised."""
+    if not LEGACY_MODE_FILE.exists():
+        return
+    try:
+        since = LEGACY_MODE_FILE.read_text().strip()
+        sessions = _read_sessions()
+        # Only migrate if there's no active sessions yet
+        if not sessions:
+            sessions["legacy"] = {
+                "active_since": since,
+                "thread_id": None,
+                "thread_name": None,
+            }
+            _write_sessions(sessions)
+        LEGACY_MODE_FILE.unlink()
+    except Exception:
         pass
 
 
-def get_bridge_mode_since() -> str | None:
-    """Return the timestamp when bridge was activated, or None."""
-    try:
-        return BRIDGE_MODE_FILE.read_text().strip()
-    except FileNotFoundError:
-        return None
+# Run migration on import
+_migrate_legacy_mode()
 
 
 # ---------------------------------------------------------------------------
-# Bridge file operations
+# Bridge file operations (JSONL mailbox)
 # ---------------------------------------------------------------------------
 
 def ensure_bridge_file():
@@ -101,13 +207,15 @@ def check_response(q_id: str) -> str | None:
     return None
 
 
-def get_pending_questions(max_age_seconds: int = 300) -> list[dict]:
-    """Get all pending questions younger than max_age_seconds."""
+def get_pending_questions(session_id: str | None = None, max_age_seconds: int = 300) -> list[dict]:
+    """Get all pending questions, optionally filtered by session_id, younger than max_age_seconds."""
     ensure_bridge_file()
     cutoff = time.time() - max_age_seconds
     pending = []
     for entry in _read_all_entries():
         if entry.get("status") != "pending":
+            continue
+        if session_id and entry.get("session_id") != session_id:
             continue
         created = entry.get("created_at", "")
         if not created:
