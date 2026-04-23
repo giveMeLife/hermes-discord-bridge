@@ -5,59 +5,91 @@ Send `clarify` questions from your Hermes CLI session to Discord, so you can app
 ## How it works
 
 1. You're working in the terminal with Hermes
-2. You say "voy al baño, if you need approval ask me on Discord"
-3. You run `/bridge on` (or Hermes activates it from your message)
-4. When the agent needs approval via `clarify`:
+2. You run `/bridge on` (or tell Hermes "preguntame por discord")
+3. When the agent needs approval via `clarify`:
    - The question appears in the terminal (as always)
    - It's ALSO sent to your Discord channel
    - The plugin polls for a Discord response in the background
-5. You reply from Discord (phone) or the terminal
-6. The first response that arrives wins
-7. When you're back: `/bridge off` or "ya volví"
+4. You reply from Discord (phone) or the terminal
+5. The first response that arrives wins
+6. When you're back: `/bridge off` or "ya volví"
 
 ## Requirements
 
-- **Hermes Agent** with `on_clarify`, `on_clarify_response`, and `gateway:message_received` hooks (PR #14602 or a build that includes them)
+- **Hermes Agent** with the clarify hooks applied (see below)
 - `DISCORD_BOT_TOKEN` and `DISCORD_HOME_CHANNEL` set in `~/.hermes/.env`
 - `hermes gateway` running for the Discord side
+
+### Clarify Hooks
+
+This plugin requires three new hook points that are not yet merged into Hermes upstream:
+
+| Hook | Type | Purpose |
+|------|------|---------|
+| `on_clarify` | Plugin hook | Fired when clarify prompt is shown; plugins can inject responses |
+| `on_clarify_response` | Plugin hook | Fired when user responds or clarify times out |
+| `gateway:message_received` | Gateway hook | Fired for authorized messages before processing |
+
+**Upstream PR:** [NousResearch/hermes-agent#14602](https://github.com/NousResearch/hermes-agent/pull/14602)
+
+Until the PR is merged, you need a Hermes build that includes these hooks. Options:
+
+1. **Use the fork** — Clone [giveMeLife/hermes-agent](https://github.com/giveMeLife/hermes-agent) branch `feat/clarity-bridge-hooks`
+2. **Cherry-pick** — Apply the commit from the PR on top of your Hermes checkout
+3. **Wait for merge** — Once the PR is merged into main, any standard Hermes update will include the hooks
 
 ## Installation
 
 ### 1. Install the plugin
 
 ```bash
-# Copy plugin to Hermes plugins directory
-cp -r discord-bridge/ ~/.hermes/plugins/discord-bridge/
+# Clone this repo
+git clone https://github.com/giveMeLife/hermes-discord-bridge.git
+
+# Copy to Hermes plugins directory
+cp -r hermes-discord-bridge/ ~/.hermes/plugins/discord-bridge/
 
 # Enable the plugin
 hermes plugins enable discord-bridge
 ```
 
+Or manually add `discord-bridge` to the `plugins.enabled` list in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - discord-bridge
+```
+
 ### 2. Install the gateway hook
 
+The gateway hook intercepts Discord messages that are responses to pending bridge questions:
+
 ```bash
-# Copy the gateway hook
-cp -r gateway_hook/ ~/.hermes/hooks/discord-bridge/
+mkdir -p ~/.hermes/hooks
+cp -r hermes-discord-bridge/gateway_hook/ ~/.hermes/hooks/discord-bridge/
 ```
 
 ### 3. Configure Discord credentials
 
-Make sure your `~/.hermes/.env` has:
+Add to `~/.hermes/.env`:
+
 ```
-DISCORD_BOT_TOKEN=your-bot-token
-DISCORD_HOME_CHANNEL=your-channel-id
+DISCORD_BOT_TOKEN=your-bot-token-here
+DISCORD_HOME_CHANNEL=your-channel-id-here
 ```
 
 ### 4. Restart Hermes
 
 ```bash
-hermes gateway  # restart the gateway
-# then start a new CLI session
+# Restart the gateway to load the gateway hook
+hermes gateway
+
+# Start a new CLI session — the plugin will auto-load
+hermes
 ```
 
 ## Usage
-
-In a CLI session:
 
 | Command | Action |
 |---------|--------|
@@ -65,7 +97,7 @@ In a CLI session:
 | `/bridge off` | Deactivate Discord bridge |
 | `/bridge status` | Check current status |
 
-Or just tell Hermes in natural language:
+Or in natural language:
 - "voy al baño, preguntame por discord" → activates bridge
 - "ya volví" → deactivates bridge
 
@@ -101,6 +133,21 @@ Or just tell Hermes in natural language:
 ### Why no source patching?
 
 Previous versions of this plugin patched `cli.py` and `gateway/run.py` at install time. That approach broke on every Hermes update. This version uses the native plugin system and gateway hooks — zero source modifications, survives updates.
+
+## Troubleshooting
+
+**`/bridge on` says "Cannot connect to Discord"**
+- Check that `DISCORD_BOT_TOKEN` and `DISCORD_HOME_CHANNEL` are set in `~/.hermes/.env`
+- Make sure `hermes gateway` is running (the bot needs to be online for the REST API to work)
+
+**Questions don't appear in Discord**
+- Verify the gateway hook is installed: `ls ~/.hermes/hooks/discord-bridge/`
+- Check the plugin is enabled: `hermes plugins list`
+
+**Discord responses don't reach the CLI**
+- Make sure `hermes gateway` is running
+- Check that the gateway hook loaded: look for `[hooks] Loaded hook 'discord-bridge'` in gateway logs
+- The bridge file at `~/.hermes/discord_bridge.jsonl` should have entries with `"status": "responded"`
 
 ## Uninstallation
 
