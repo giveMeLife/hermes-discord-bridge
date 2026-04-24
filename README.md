@@ -112,6 +112,8 @@ When bridge mode is active, the agent can also send arbitrary messages to your D
 
 The tool automatically finds the active session's Discord thread. If multiple sessions are active, it picks the most recently active one. You can also pass `session_id` to target a specific session.
 
+**Thread recovery:** If you delete the Discord thread manually, the plugin detects it on the next send and automatically creates a new thread — no manual intervention needed.
+
 ## Architecture
 
 ```
