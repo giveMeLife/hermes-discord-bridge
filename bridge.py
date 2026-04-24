@@ -85,6 +85,15 @@ def get_session_thread(session_id: str) -> str | None:
     return sessions.get(session_id, {}).get("thread_id")
 
 
+def clear_session_thread(session_id: str):
+    """Remove the Discord thread ID for a session (e.g. when thread was deleted)."""
+    sessions = _read_sessions()
+    if session_id in sessions:
+        sessions[session_id]["thread_id"] = None
+        sessions[session_id]["thread_name"] = None
+        _write_sessions(sessions)
+
+
 def get_session_by_thread(thread_id: str) -> str | None:
     """Get the session_id associated with a Discord thread, or None."""
     sessions = _read_sessions()

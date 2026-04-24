@@ -57,8 +57,13 @@ def _discord_api_request(method: str, url: str, token: str, data: dict | None = 
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         error_body = e.read().decode() if e.fp else ""
+        try:
+            error_data = json.loads(error_body) if error_body else {}
+        except json.JSONDecodeError:
+            error_data = {"message": error_body[:200]}
+        error_data["_http_status"] = e.code
         logger.error("Discord API error %d: %s", e.code, error_body[:200])
-        return None
+        return error_data
     except Exception as e:
         logger.error("Discord API request failed: %s", e)
         return None
@@ -174,26 +179,37 @@ def send_message_to_thread(
     If thread_id is provided, sends to that thread. Otherwise sends to
     channel_id (or the home channel from env as fallback).
 
-    Returns {"success": bool, "message_id": str | None, "error": str | None}.
+    Returns {"success": bool, "message_id": str | None, "error": str | None,
+             "thread_deleted": bool}.
     """
     token, home_channel = _load_env()
     if not token:
-        return {"success": False, "message_id": None, "error": "DISCORD_BOT_TOKEN not found"}
+        return {"success": False, "message_id": None, "error": "DISCORD_BOT_TOKEN not found", "thread_deleted": False}
 
     target_id = thread_id or channel_id or home_channel
     if not target_id:
-        return {"success": False, "message_id": None, "error": "No channel or thread ID provided"}
+        return {"success": False, "message_id": None, "error": "No channel or thread ID provided", "thread_deleted": False}
 
     url = f"https://discord.com/api/v10/channels/{target_id}/messages"
     result = _discord_api_request("POST", url, token, {"content": message})
 
     if result and "id" in result:
         logger.info("Discord bridge: sent message %s to thread %s", result["id"], thread_id)
-        return {"success": True, "message_id": result["id"], "error": None}
+        return {"success": True, "message_id": result["id"], "error": None, "thread_deleted": False}
 
-    error_msg = result.get("message", str(result)) if result else "Unknown error"
+    # Check for "Unknown Channel" (thread deleted)
+    is_deleted = False
+    if isinstance(result, dict):
+        code = result.get("code")
+        status = result.get("_http_status")
+        if code == 10003 or status == 404:
+            is_deleted = True
+        error_msg = result.get("message", str(result))
+    else:
+        error_msg = "Unknown error"
+
     logger.warning("Discord bridge: failed to send message to %s: %s", target_id, error_msg)
-    return {"success": False, "message_id": None, "error": error_msg}
+    return {"success": False, "message_id": None, "error": error_msg, "thread_deleted": is_deleted}
 
 
 def test_connection() -> tuple[bool, str]:

@@ -46,6 +46,7 @@ from .bridge import (
     get_pending_questions,
     cleanup_old_entries,
     cleanup_old_sessions,
+    clear_session_thread,
 )
 from .discord_sender import (
     create_thread,
@@ -113,8 +114,19 @@ def _on_clarify(question: str, choices: list, session_id: str,
     try:
         q_id = write_question(session_id, question, choices)
         msg_id = send_question_to_discord(question, choices, q_id, thread_id=thread_id)
-        logger.info("Bridge: sent question %s to Discord thread %s (msg %s)",
-                     q_id, thread_id, msg_id)
+        if not msg_id and thread_id:
+            # Possibly the thread was deleted — try recovering
+            logger.warning("Bridge: question send failed, attempting thread recovery...")
+            clear_session_thread(session_id)
+            thread_id = _ensure_session_thread(session_id)
+            if thread_id:
+                msg_id = send_question_to_discord(question, choices, q_id, thread_id=thread_id)
+        if msg_id:
+            logger.info("Bridge: sent question %s to Discord thread %s (msg %s)",
+                         q_id, thread_id, msg_id)
+        else:
+            logger.warning("Bridge: failed to send question to Discord")
+            return
     except Exception as e:
         logger.warning("Bridge: failed to send question to Discord: %s", e)
         return
@@ -357,6 +369,7 @@ _DISCORD_SEND_SCHEMA = {
 def discord_send(message: str, session_id: str | None = None, **kwargs) -> str:
     """Send a message to the Discord thread of an active bridge session.
 
+    If the thread was deleted, automatically creates a new one and retries.
     Returns a JSON string with success status, message_id, and any error.
     """
     import json
@@ -382,4 +395,22 @@ def discord_send(message: str, session_id: str | None = None, **kwargs) -> str:
 
     # Send the message
     result = send_message_to_thread(message, thread_id=thread_id)
+
+    # If thread was deleted, create a new one and retry
+    if not result["success"] and result.get("thread_deleted"):
+        logger.warning("Bridge: thread %s was deleted, creating new one...", thread_id)
+        clear_session_thread(session_id)
+        new_thread_id = _ensure_session_thread(session_id)
+        if new_thread_id:
+            result = send_message_to_thread(message, thread_id=new_thread_id)
+            if result["success"]:
+                logger.info("Bridge: recovered from deleted thread, new thread %s", new_thread_id)
+        else:
+            result = {
+                "success": False,
+                "message_id": None,
+                "error": "Thread was deleted and could not create a new one.",
+                "thread_deleted": True,
+            }
+
     return json.dumps(result)
