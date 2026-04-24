@@ -164,6 +164,38 @@ def send_deactivation_notice(session_id: str, thread_id: str | None = None):
     _discord_api_request("POST", url, token, {"content": content})
 
 
+def send_message_to_thread(
+    message: str,
+    thread_id: str | None = None,
+    channel_id: str | None = None,
+) -> dict:
+    """Send an arbitrary message to a Discord thread or channel.
+
+    If thread_id is provided, sends to that thread. Otherwise sends to
+    channel_id (or the home channel from env as fallback).
+
+    Returns {"success": bool, "message_id": str | None, "error": str | None}.
+    """
+    token, home_channel = _load_env()
+    if not token:
+        return {"success": False, "message_id": None, "error": "DISCORD_BOT_TOKEN not found"}
+
+    target_id = thread_id or channel_id or home_channel
+    if not target_id:
+        return {"success": False, "message_id": None, "error": "No channel or thread ID provided"}
+
+    url = f"https://discord.com/api/v10/channels/{target_id}/messages"
+    result = _discord_api_request("POST", url, token, {"content": message})
+
+    if result and "id" in result:
+        logger.info("Discord bridge: sent message %s to thread %s", result["id"], thread_id)
+        return {"success": True, "message_id": result["id"], "error": None}
+
+    error_msg = result.get("message", str(result)) if result else "Unknown error"
+    logger.warning("Discord bridge: failed to send message to %s: %s", target_id, error_msg)
+    return {"success": False, "message_id": None, "error": error_msg}
+
+
 def test_connection() -> tuple[bool, str]:
     """Test Discord bot connection. Returns (success, message)."""
     token, channel_id = _load_env()

@@ -1,6 +1,6 @@
 name: discord-bridge
-version: 1.1.0
-description: "Send clarify questions to Discord for remote approval when bridge mode is active. Each CLI session gets its own Discord thread — supports multiple concurrent sessions."
+version: 1.2.0
+description: "Send clarify questions and arbitrary messages to Discord for remote approval and progress updates. Each CLI session gets its own Discord thread — supports multiple concurrent sessions."
 author: "@giveMeLife"
 hooks:
   - on_clarify

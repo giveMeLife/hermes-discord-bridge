@@ -52,6 +52,7 @@ from .discord_sender import (
     send_question_to_discord,
     send_ack_to_discord,
     send_deactivation_notice,
+    send_message_to_thread,
     test_connection,
 )
 
@@ -71,6 +72,14 @@ def register(ctx):
     ctx.register_hook("on_clarify_response", _on_clarify_response)
     ctx.register_command("bridge", _bridge_command,
                          "Toggle Discord bridge for remote approval")
+    ctx.register_tool(
+        name="discord_send",
+        toolset="discord_bridge",
+        schema=_DISCORD_SEND_SCHEMA,
+        handler=lambda args, **kw: discord_send(**args, **kw),
+        check_fn=lambda: True,
+        description="Send a message to the active Discord thread.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -308,3 +317,69 @@ def _bridge_command(raw_args: str) -> str:
 
     else:
         return "Usage: /bridge [on|off|status]"
+
+
+# ---------------------------------------------------------------------------
+# Tool: discord_send
+# ---------------------------------------------------------------------------
+
+_DISCORD_SEND_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "discord_send",
+        "description": (
+            "Send a message to the active Discord bridge thread. "
+            "Useful for notifying the user of progress, results, or status updates "
+            "when they are away from the terminal but watching Discord. "
+            "If no session_id is provided, the most recently active session is used."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message text to send to Discord. Keep it concise.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional session ID. If omitted, uses the most recently "
+                        "active session's Discord thread."
+                    ),
+                },
+            },
+            "required": ["message"],
+        },
+    },
+}
+
+
+def discord_send(message: str, session_id: str | None = None, **kwargs) -> str:
+    """Send a message to the Discord thread of an active bridge session.
+
+    Returns a JSON string with success status, message_id, and any error.
+    """
+    import json
+
+    # Resolve session_id if not provided
+    if not session_id:
+        sessions = get_active_sessions()
+        if not sessions:
+            return json.dumps({
+                "success": False,
+                "error": "No active bridge sessions. Ask the user to run '/bridge on' first.",
+            })
+        # Use the most recently active session
+        session_id = max(sessions.keys(), key=lambda sid: sessions[sid].get("active_since", ""))
+
+    # Get the thread for this session
+    thread_id = get_session_thread(session_id)
+    if not thread_id:
+        return json.dumps({
+            "success": False,
+            "error": f"Session {session_id[:6]} has no Discord thread.",
+        })
+
+    # Send the message
+    result = send_message_to_thread(message, thread_id=thread_id)
+    return json.dumps(result)
