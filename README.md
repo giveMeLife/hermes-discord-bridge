@@ -101,6 +101,17 @@ Or in natural language:
 - "voy al baño, preguntame por discord" → activates bridge
 - "ya volví" → deactivates bridge
 
+## Sending progress updates
+
+When bridge mode is active, the agent can also send arbitrary messages to your Discord thread via the `discord_send` tool. Useful for progress updates, intermediate results, or status notifications while you're away from the terminal.
+
+| Tool call | Result |
+|-----------|--------|
+| `discord_send(message="Step 2 done: 47 files processed")` | Message appears in Discord thread |
+| `discord_send(message="Error on step 3, need your input")` | You get notified on your phone |
+
+The tool automatically finds the active session's Discord thread. If multiple sessions are active, it picks the most recently active one. You can also pass `session_id` to target a specific session.
+
 ## Architecture
 
 ```
