@@ -1,6 +1,8 @@
 # Hermes Discord Bridge Plugin
 
-Send `clarify` questions from your Hermes CLI session to Discord, so you can approve from your phone while away from the terminal.
+Send `clarify` questions from your Hermes CLI session to Discord, so you can
+approve from your phone while away from the terminal. Also supports sending
+arbitrary messages (progress updates, results) to your session's Discord thread.
 
 ## How it works
 
@@ -8,69 +10,58 @@ Send `clarify` questions from your Hermes CLI session to Discord, so you can app
 2. You run `/bridge on` (or tell Hermes "preguntame por discord")
 3. When the agent needs approval via `clarify`:
    - The question appears in the terminal (as always)
-   - It's ALSO sent to your Discord channel
+   - It's ALSO sent to a dedicated Discord thread for your session
    - The plugin polls for a Discord response in the background
 4. You reply from Discord (phone) or the terminal
 5. The first response that arrives wins
 6. When you're back: `/bridge off` or "ya volví"
 
+The agent can also send messages to your thread via `discord_send` for progress
+updates while you're away.
+
 ## Requirements
 
-- **Hermes Agent** with the clarify hooks applied (see below)
+- **Hermes Agent** with the clarify hooks (fork or PR #14602)
 - `DISCORD_BOT_TOKEN` and `DISCORD_HOME_CHANNEL` set in `~/.hermes/.env`
-- `hermes gateway` running for the Discord side
-
-### Clarify Hooks
-
-This plugin requires three new hook points that are not yet merged into Hermes upstream:
-
-| Hook | Type | Purpose |
-|------|------|---------|
-| `on_clarify` | Plugin hook | Fired when clarify prompt is shown; plugins can inject responses |
-| `on_clarify_response` | Plugin hook | Fired when user responds or clarify times out |
-| `gateway:message_received` | Gateway hook | Fired for authorized messages before processing |
-
-**Upstream PR:** [NousResearch/hermes-agent#14602](https://github.com/NousResearch/hermes-agent/pull/14602)
-
-Until the PR is merged, you need a Hermes build that includes these hooks. Options:
-
-1. **Use the fork** — Clone [giveMeLife/hermes-agent](https://github.com/giveMeLife/hermes-agent) branch `feat/clarity-bridge-hooks`
-2. **Cherry-pick** — Apply the commit from the PR on top of your Hermes checkout
-3. **Wait for merge** — Once the PR is merged into main, any standard Hermes update will include the hooks
+- `hermes gateway` running
 
 ## Installation
 
-### 1. Install the plugin
+### Step 1 — Clone and copy the plugin
 
 ```bash
-# Clone this repo
 git clone https://github.com/giveMeLife/hermes-discord-bridge.git
-
-# Copy to Hermes plugins directory
 cp -r hermes-discord-bridge/ ~/.hermes/plugins/discord-bridge/
-
-# Enable the plugin
-hermes plugins enable discord-bridge
 ```
 
-Or manually add `discord-bridge` to the `plugins.enabled` list in `~/.hermes/config.yaml`:
-
-```yaml
-plugins:
-  enabled:
-    - discord-bridge
-```
-
-### 2. Install the gateway hook
-
-The gateway hook intercepts Discord messages that are responses to pending bridge questions:
+### Step 2 — Install the gateway hook
 
 ```bash
 mkdir -p ~/.hermes/hooks
 cp -r hermes-discord-bridge/gateway_hook/ ~/.hermes/hooks/discord-bridge/
 ```
 
-### 3. Configure Discord credentials
+### Step 3 — Configure `~/.hermes/config.yaml`
+
+**Both** entries are required. The plugin won't load if either is missing.
+
+```yaml
+# 1. Enable the plugin
+plugins:
+  enabled:
+    - discord-bridge
+
+# 2. Add the toolset to your platform (cli, telegram, etc.)
+platform_toolsets:
+  cli:
+    - hermes-cli
+    - discord_bridge    # <-- add this line
+```
+
+> **Common mistake:** only adding `plugins.enabled` but not `platform_toolsets`.
+> The plugin loads but the `discord_send` tool won't be available to the agent.
+
+### Step 4 — Set Discord credentials
 
 Add to `~/.hermes/.env`:
 
@@ -79,14 +70,23 @@ DISCORD_BOT_TOKEN=your-bot-token-here
 DISCORD_HOME_CHANNEL=your-channel-id-here
 ```
 
-### 4. Restart Hermes
+### Step 5 — Restart
 
 ```bash
-# Restart the gateway to load the gateway hook
+# Restart the gateway (loads the hook)
 hermes gateway
 
-# Start a new CLI session — the plugin will auto-load
+# Start a new CLI session (loads the plugin + toolset)
 hermes
+```
+
+### Verify it works
+
+```bash
+# In the CLI:
+/bridge status        # Should say "OFF (no active sessions)"
+/bridge on            # Should say "ON (pending)"
+# Now when a clarify fires, it goes to Discord
 ```
 
 ## Usage
@@ -101,18 +101,17 @@ Or in natural language:
 - "voy al baño, preguntame por discord" → activates bridge
 - "ya volví" → deactivates bridge
 
-## Sending progress updates
+### Sending progress updates
 
-When bridge mode is active, the agent can also send arbitrary messages to your Discord thread via the `discord_send` tool. Useful for progress updates, intermediate results, or status notifications while you're away from the terminal.
+When bridge mode is active, the agent can send messages to your Discord thread:
 
-| Tool call | Result |
-|-----------|--------|
-| `discord_send(message="Step 2 done: 47 files processed")` | Message appears in Discord thread |
-| `discord_send(message="Error on step 3, need your input")` | You get notified on your phone |
+```
+discord_send(message="Step 2 done: 47 files processed")
+```
 
-The tool automatically finds the active session's Discord thread. If multiple sessions are active, it picks the most recently active one. You can also pass `session_id` to target a specific session.
-
-**Thread recovery:** If you delete the Discord thread manually, the plugin detects it on the next send and automatically creates a new thread — no manual intervention needed.
+The tool automatically routes to the current session's thread. If no thread
+exists yet (bridge was activated but no clarify fired), it creates one
+automatically.
 
 ## Architecture
 
@@ -138,20 +137,20 @@ The tool automatically finds the active session's Discord thread. If multiple se
 
 | File | Role |
 |------|------|
-| `__init__.py` | Plugin entry point (`register()`), hook handlers, `/bridge` command |
+| `__init__.py` | Plugin entry point (`register()`), hook handlers, `/bridge` command, `discord_send` tool |
 | `bridge.py` | Bridge file management (JSONL mailbox between CLI and gateway) |
-| `discord_sender.py` | Send questions to Discord via REST API (no external deps) |
+| `discord_sender.py` | Send messages to Discord via REST API (no external deps) |
 | `gateway_hook/` | Gateway hook that intercepts Discord messages as bridge responses |
-
-### Why no source patching?
-
-Previous versions of this plugin patched `cli.py` and `gateway/run.py` at install time. That approach broke on every Hermes update. This version uses the native plugin system and gateway hooks — zero source modifications, survives updates.
 
 ## Troubleshooting
 
+**Plugin loads but `discord_send` tool is not available**
+- Check that `discord_bridge` is in `platform_toolsets.cli` in `~/.hermes/config.yaml`
+- Restart the CLI after changing config
+
 **`/bridge on` says "Cannot connect to Discord"**
-- Check that `DISCORD_BOT_TOKEN` and `DISCORD_HOME_CHANNEL` are set in `~/.hermes/.env`
-- Make sure `hermes gateway` is running (the bot needs to be online for the REST API to work)
+- Check `DISCORD_BOT_TOKEN` and `DISCORD_HOME_CHANNEL` in `~/.hermes/.env`
+- Make sure `hermes gateway` is running
 
 **Questions don't appear in Discord**
 - Verify the gateway hook is installed: `ls ~/.hermes/hooks/discord-bridge/`
@@ -159,8 +158,7 @@ Previous versions of this plugin patched `cli.py` and `gateway/run.py` at instal
 
 **Discord responses don't reach the CLI**
 - Make sure `hermes gateway` is running
-- Check that the gateway hook loaded: look for `[hooks] Loaded hook 'discord-bridge'` in gateway logs
-- The bridge file at `~/.hermes/discord_bridge.jsonl` should have entries with `"status": "responded"`
+- Check gateway logs for `[hooks] Loaded hook 'discord-bridge'`
 
 ## Uninstallation
 
@@ -169,8 +167,10 @@ hermes plugins disable discord-bridge
 rm -rf ~/.hermes/plugins/discord-bridge/
 rm -rf ~/.hermes/hooks/discord-bridge/
 rm -f ~/.hermes/discord_bridge.jsonl
-rm -f ~/.hermes/discord_bridge_mode
+rm -f ~/.hermes/discord_bridge_sessions.json
 ```
+
+Also remove `discord_bridge` from `platform_toolsets.cli` in `~/.hermes/config.yaml`.
 
 ## License
 
