@@ -340,10 +340,11 @@ _DISCORD_SEND_SCHEMA = {
     "function": {
         "name": "discord_send",
         "description": (
-            "Send a message to the active Discord bridge thread. "
+            "Send a message to the current session's Discord thread. "
             "Useful for notifying the user of progress, results, or status updates "
             "when they are away from the terminal but watching Discord. "
-            "If no session_id is provided, the most recently active session is used."
+            "Automatically uses the current session's thread. "
+            "If the bridge was activated (/bridge on) but no thread exists yet, creates one."
         ),
         "parameters": {
             "type": "object",
@@ -374,7 +375,9 @@ def discord_send(message: str, session_id: str | None = None, **kwargs) -> str:
     """
     import json
 
-    # Resolve session_id if not provided
+    # Resolve session_id: explicit param > kwargs (from dispatch) > most recent active
+    if not session_id:
+        session_id = kwargs.get("session_id") or None
     if not session_id:
         sessions = get_active_sessions()
         if not sessions:
@@ -388,11 +391,17 @@ def discord_send(message: str, session_id: str | None = None, **kwargs) -> str:
     # Get the thread for this session
     thread_id = get_session_thread(session_id)
     if not thread_id:
-        return json.dumps({
-            "success": False,
-            "error": f"Session {session_id[:6]} has no Discord thread.",
-        })
-
+        # No thread yet — try to create one if bridge is active or was requested
+        if is_bridge_active(session_id) or _is_bridge_requested():
+            if _is_bridge_requested():
+                _consume_bridge_request()
+                activate_session(session_id)
+            thread_id = _ensure_session_thread(session_id)
+        if not thread_id:
+            return json.dumps({
+                "success": False,
+                "error": f"Session {session_id[:6]} has no Discord thread. Run '/bridge on' first.",
+            })
     # Send the message
     result = send_message_to_thread(message, thread_id=thread_id)
 
