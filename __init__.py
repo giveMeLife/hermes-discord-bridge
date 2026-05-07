@@ -336,33 +336,30 @@ def _bridge_command(raw_args: str) -> str:
 # ---------------------------------------------------------------------------
 
 _DISCORD_SEND_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "discord_send",
-        "description": (
-            "Send a message to the current session's Discord thread. "
-            "Useful for notifying the user of progress, results, or status updates "
-            "when they are away from the terminal but watching Discord. "
-            "Automatically uses the current session's thread. "
-            "If the bridge was activated (/bridge on) but no thread exists yet, creates one."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "The message text to send to Discord. Keep it concise.",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": (
-                        "Optional session ID. If omitted, uses the most recently "
-                        "active session's Discord thread."
-                    ),
-                },
+    "name": "discord_send",
+    "description": (
+        "Send a message to the current session's Discord thread. "
+        "Useful for notifying the user of progress, results, or status updates "
+        "when they are away from the terminal but watching Discord. "
+        "Automatically uses the current session's thread. "
+        "If the bridge was activated (/bridge on) but no thread exists yet, creates one."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "The message text to send to Discord. Keep it concise.",
             },
-            "required": ["message"],
+            "session_id": {
+                "type": "string",
+                "description": (
+                    "Optional session ID. If omitted, uses the most recently "
+                    "active session's Discord thread."
+                ),
+            },
         },
+        "required": ["message"],
     },
 }
 
